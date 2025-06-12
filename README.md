@@ -38,8 +38,8 @@ BookChat is an interactive command-line tool that allows you to ask questions ab
 ### 1. Clone the Repository
 
 ```bash
-git clone <repository_url>
-cd <repository_directory>
+git clone https://github.com/TacticalNuclearRaccoon/bookchat.git
+cd bookchat
 ```
 
 ### 2. (Recommended) Create a Virtual Environment
