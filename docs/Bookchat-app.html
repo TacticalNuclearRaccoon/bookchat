@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RAG with Docling - Deniz Pekin</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <main class="container">
+        <article>
+            <h1>Bookchat: RAG app with Docling using a local Mistral model from Ollama</h1>
+            
+            <div class="meta">
+                <span class="date">Published: January 2025</span>
+                <span class="tags">
+                    <a href="#" class="tag">Python</a>
+                    <a href="#" class="tag">Docling</a>
+                    <a href="#" class="tag">Langchain</a>
+                    <a href="#" class="tag">Ollama</a>
+                </span>
+            </div>
+
+            <p class="lead">
+                BookChat is an interactive command-line tool that allows you to ask questions about the content of a PDF book. It leverages document processing, text chunking, semantic embeddings, and a local language model to provide accurate answers based on the book's content.
+            </p>
+
+            <h2>Overview</h2>
+            <p>
+                I have recently seen an AI tutor application from <a href="https://www.youtube.com/@zenvanriel" class="inline-link">Zen van Riel</a> on YouTube where he presented the capabilities of the Docling tool from IBM. I was impressed by the application and I wanted to try and build something similar.
+                This project is my attempt to try out and familiarize with Docling. Docling is a document processing/parsing tool that was released by IBM. It is known to integrate seamlessly with Generative AI workflows therefore I wanted to try it to transform pdf documents into markdown. 
+            </p>
+            <img src="images/docling.png" 
+                 alt="Docling from IBM" 
+                 class="article-image">
+                 <p class="image-caption">Docling (IBM) "nom nom noms" documents otherwise difficult to read with LLMs into more accessible formats</p>
+            <p>
+                Large Language Models can read through text files but in my experience they are most performant reading Markdown format. However parsing documents, especially in pdf format can be challenging; especially for tables and schematics in technical documents.
+            </p>
+            <p>
+                In this project, I wanted to test it out by following the instructions on the RAG with LangChain example in the <a href="https://docling-project.github.io/docling/examples/rag_langchain/" class="inline-link">official documentation</a>. 
+            </p>
+
+            <p>
+                Since I am too poor to pay for API calls to big foundational models, I am using a localhosted Mistral 7b model from Ollama. 
+            </p>
+
+            <p>
+                Ollama is the best way to try out LLM applications. You can experiment with lightweight models in a try-error manner without expensive mistakes.
+            </p>
+
+            <img src="images/Ollama.png" 
+                 alt="Ollama" 
+                 class="article-image">
+                 <p class="image-caption">You can check out Ollama at their <a href="ollama.com" class="inline-link"> official website</a></p>
+
+            <p>
+                The Mistral 7b model can be pulled directly from Ollama. It is a light-weight (~4GB) but extremely capable model that I like very much. 
+
+            <img src="images/mistral7b.png" 
+                 alt="Mistral" 
+                 class="article-image">
+                 <p class="image-caption">Screenshot from the official <a href="https://mistral.ai/news/announcing-mistral-7b" class="inline-link"> Mistral AI website</a> showing off the benchmark performances of the Mistral 7b model. To date (and in my humble opinion), it is the best 7b model out there.</p> 
+                In the app, the Mistral 7b is used as the conversational LLM model that answers the user's questions. The final app in this project is called bookchat and it allows to chat with books (or other documents). 
+            </p>
+
+            <h2>Key Features</h2>
+            <p>Here are the main features:</p>
+            <ul>
+                <li>Feature one: Using Docling, the app converts a document into Markdown format (the document has to be a pdf). Once the conversion is completed the markdown is embedded into a vector database (so you don't have to perform the conversion each time)</li>
+                <li>Feature two: The app uses a local LLM through Ollama. Therefore the whole process is free, localhosted and 100% compatible with confidential documents.</li>
+                <li>A opensource model from Hugging Face is used for embeddings. Which is also free.</li>
+            </ul>
+
+            <h2>Technical Implementation</h2>
+            <p>
+                The process uses five steps.
+                <li><strong>1.Document Loading:</strong>The DoclingBookLoader class loads and converts the PDF to markdown, extracting text and tables with OCR support.</li>
+            <pre><code>
+class DoclingBookLoader(BaseLoader):
+    def __init__(self, file_path: str) -> None:
+        self.file_path = file_path
+        accelerator_options = AcceleratorOptions(
+            num_threads=8, device=AcceleratorDevice.AUTO
+        )
+
+        pipeline_options = PdfPipelineOptions()
+        pipeline_options.accelerator_options = accelerator_options
+        pipeline_options.do_ocr = True
+        pipeline_options.do_table_structure = True
+        pipeline_options.table_structure_options.do_cell_matching = True
+
+        self.converter = DocumentConverter(
+            format_options={
+                InputFormat.PDF: PdfFormatOption(
+                    pipeline_options=pipeline_options,
+                )
+            }
+        )</code></pre>
+
+            <p class="image-caption">
+                The code above shows the document loading pipeline. You can find the complete 
+                implementation in the <a href="https://github.com/TacticalNuclearRaccoon/bookchat/blob/main/bookchat.py" class="inline-link">GitHub repository</a>.
+            </p>
+
+                <li><strong>2.Text Splitting: </strong>The document is split into overlapping chunks using RecursiveCharacterTextSplitter for better context retrieval. This is imported directly from LangChain "langchain_text_splitters"</li>
+                <li><strong>3.Embeddings & Vector Store: </strong>Each chunk is embedded using HuggingFace's all-MiniLM-L6-v2 model. Chunks are indexed with FAISS for fast similarity search. The index is saved for future runs. The conversion takes quite a while so it is important not to have to do this everytime.</li>
+                <li><strong>4.Conversational Question and Answer Chain: </strong>A retriever fetches relevant chunks for each question. The local LLM (via Ollama) answers questions using the retrieved context.</li>
+
+                <pre><code>
+    def create_book_qa_system(pdf_path: str):
+        total_start_time = time.time()
+        print("\n🚀 Initializing Book QA System...")
+
+        index_path = f"{pdf_path}_faiss_index"
+
+        print("🔤 Initializing embedding model...")
+        embedding_start = time.time()
+        embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2"
+        )
+        embedding_init_time = time.time() - embedding_start
+        print(f"✅ Embedding model initialized in {embedding_init_time:.2f} seconds")
+
+        if os.path.exists(index_path):
+            print("📦 Loading existing vector store...")
+            load_start = time.time()
+            vectorstore = FAISS.load_local(
+                index_path, embeddings, allow_dangerous_deserialization=True
+            )
+            load_time = time.time() - load_start
+            print(f"✅ Vector store loaded in {load_time:.2f} seconds")
+        else:
+            print("\n💫 No existing index found. Creating new one...")
+
+            loader = DoclingBookLoader(pdf_path)
+            documents = loader.load()
+
+            print("\n📄 Splitting document into chunks...")
+            split_start = time.time()
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=1000, chunk_overlap=200, separators=["\n\n", "\n", " ", ""]
+            )
+            splits = text_splitter.split_documents(documents)
+            split_time = time.time() - split_start
+            print(f"✅ Created {len(splits)} chunks in {split_time:.2f} seconds")
+
+            print("\n📦 Building vector store and creating embeddings...")
+            vectorstore_start = time.time()
+            vectorstore = FAISS.from_documents(splits, embeddings)
+            vectorstore_time = time.time() - vectorstore_start
+            print(f"✅ Vector store built in {vectorstore_time:.2f} seconds")
+
+            print(f"💾 Saving vector store to {index_path}")
+            save_start = time.time()
+            vectorstore.save_local(index_path)
+            save_time = time.time() - save_start
+            print(f"✅ Vector store saved in {save_time:.2f} seconds")
+
+        retriever = vectorstore.as_retriever(search_type="mmr", search_kwargs={"k": 5})
+        print("✅ Vector store ready")
+
+        print("\n🤖 Connecting to local language model...")
+        llm = ChatOllama(
+            model="mistral:latest",
+            temperature=0)
+
+        print("⛓️ Creating QA chain...")
+
+        template = """You are a helpful assistant answering questions about the book: {book_name}. 
+        
+        Use the following context to answer the question: {context}
+        
+        Question: {question}
+        
+        Answer the question accurately and concisely based on the context provided."""
+
+        prompt = PromptTemplate(
+            input_variables=["book_name", "context", "question"], template=template
+        )
+
+        qa_chain = ConversationalRetrievalChain.from_llm(
+            llm=llm,
+            retriever=retriever,
+            return_source_documents=True,
+            combine_docs_chain_kwargs={
+                "prompt": prompt,
+                "document_variable_name": "context",
+            },
+        )
+
+        total_time = time.time() - total_start_time
+        print(f"\n✨ System ready! Total setup took {total_time:.2f} seconds")
+
+        return qa_chain
+                </code></pre>
+
+            <p class="image-caption">
+                The code above shows the embedding and Q&A implementation.
+            </p>
+
+                <li><strong>5.User Interaction: </strong>Users ask questions in the terminal. The system displays both the answer and the supporting context.</li>
+            </p>
+
+            <img src="images/ask-question.png" 
+                 alt="screenshot from the app" 
+                 class="article-image">
+                 <p class="image-caption">Screenshot from the app after the document injestion is complete and the app prompts the user to ask a question</p>
+
+            <img src="images/answer.png" 
+                 alt="another screenshot from the app" 
+                 class="article-image">
+                 <p class="image-caption">Screenshot from the app. In this demo the book "CSS for Dummies" was injested. The user asked the question "How can I center a div?" and the Mistral 7b model returns the chunks where this information is found and gives a curated answer.</p>
+
+            <h3>Technologies Used</h3>
+            <p>The project was built using the following technologies:</p>
+            <ol>
+                <li><strong>Python 3.11</strong> - Core programming language</li>
+                <li><strong>LangChain</strong> - Web framework</li>
+                <li><strong>Docling</strong> - Document parsing</li>
+                <li><strong>Ollama</strong> - LLM model provider</li>
+                <li><strong>Hugging Face</strong> - Embedding model provider</li>
+            </ol>
+
+            <h2>Future Improvements</h2>
+            <p>Potential enhancements for future versions:</p>
+            <ol>
+                <li>For the embeddings model, I would like to try and use a more powerful model that is not limited to 32000 tokens. This is especially useful for large books and documents.</li>
+                <li>In its actual state the app runs only in the Terminal. It could be interesting to add a user interface like Streamlit to the app so that it can be used in a more user-friendly way.</li>
+                <li>Currently the app only supports pdf documents. It could be interesting to add support for other document formats like word, excel, powerpoint etc.</li>
+                <li>My next challenge will be to serve this application in a web environment. Dockerizing the app would make it more portable and easier to deploy but 2 separate containers are needed (one for the app and one for the LLM (Ollama)).</li>
+            </ol>
+
+            <h2>Conclusion</h2>
+            <p>
+                This was overall an interesting project to try out Docling and to build a RAG application with a local LLM. I am happy with the results and I am looking forward to improving the app in the future. Check out Zen van Riel's <a href="https://aiengineer.community/join" class="inline-link">community hub</a>, he has a lot of very cool examples and overall he explains AI conceprs very well.
+            </p>
+            <div class="project-links">
+                <a href="https://github.com/TacticalNuclearRaccoon/bookchat" class="button">View on GitHub</a>
+            </div>
+        </article>
+    </main>
+
+    <footer class="site-footer">
+        <div class="container">
+            <p>&copy; 2025 Deniz Pekin. No actual copyright. Feel free to steal everything (^^) </p>
+            <p>
+                <a href="https://github.com/TacticalNuclearRaccoon" class="footer-link">GitHub</a> · 
+                <a href="https://www.linkedin.com/in/deniz-pekin-469817b0" class="footer-link">LinkedIn</a> · 
+                <a href="mailto:deniz.pekin@protonmail.com" class="footer-link">Email</a>
+            </p>
+        </div>
+    </footer>
+</body>
+</html>
